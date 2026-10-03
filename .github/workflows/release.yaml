@@ -76,56 +76,30 @@ jobs:
         id: meta
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
-      # ghcr.io answers a blob HEAD with 403 rather than 404 for a blob that
-      # does not exist yet, and go-containerregistry (inside ko) treats that as
-      # a hard error instead of "upload it". So confirm up front that this token
-      # can actually reach the target package, and fail with a clear message
-      # rather than 60 seconds into a build.
-      - name: Check registry access
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO_PATH: ${{ github.repository }}
-        run: |
-          set -uo pipefail
-          code=$(curl -s -o /dev/null -w '%{http_code}' \
-            -H "Authorization: Bearer $GHCR_TOKEN" \
-            "https://ghcr.io/v2/${REPO_PATH}/tags/list")
-          echo "ghcr tags/list -> $code"
-          if [ "$code" != "200" ]; then
-            echo "::error::The workflow token cannot read ghcr.io/$REPO_PATH (HTTP $code)."
-            echo "::error::For a package created by a different token this usually means the"
-            echo "::error::package is not linked to this repository: link it under"
-            echo "::error::Settings > Packages, or set a GHCR_TOKEN secret holding a PAT"
-            echo "::error::with write:packages."
-            exit 1
-          fi
-
       # --tags takes a BARE TAG, not a full image reference: passing
       # "$IMAGE:$TAG" makes ko prepend its own computed tag and fails with
       # 'repository can only contain the characters ...'. --bare makes
       # KO_DOCKER_REPO the repository verbatim instead of appending ko's default
       # '<package>-<import-path-hash>' suffix.
       #
-      # --sbom-dir, not --sbom: with --bare, --sbom still pushes the SBOM under
-      # ko's DEFAULT repo name, which does not exist. Writing them to disk and
-      # attaching them as a workflow artifact keeps the SBOM without depending on
-      # that behaviour.
-      - name: Build and push (multi-arch, with SBOM)
+      # --sbom=none: ko's SBOM publishing path fails against ghcr.io. It
+      # uploads the SBOM with go-containerregistry, which HEAD-probes the blob
+      # first, and ghcr answers a HEAD for a blob that does not exist with 403
+      # Forbidden rather than 404 -- an error go-containerregistry treats as
+      # fatal. The image push uses a different path and is unaffected.
+      # `--sbom-dir sbom` alone does NOT avoid this: ko still uploads the SBOM
+      # when --push is on. Build SBOMs locally when needed:
+      #   ko build --sbom-dir sbom --bare --push=false ...
+      - name: Build and push (multi-arch)
         env:
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
           ko build \
-            --sbom-dir sbom \
+            --sbom=none \
             --bare \
             --platform=linux/arm64,linux/amd64 \
             --tags "$TAG" \
             .
-
-      - name: Upload SBOMs
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom
-          path: sbom/
 
       # Sign the index, not the per-platform manifests: a consumer verifies the
       # digest it pulls, and signing only the arch-specific manifests would
