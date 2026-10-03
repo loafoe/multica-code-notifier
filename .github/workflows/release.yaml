@@ -175,10 +175,14 @@ jobs:
           IMAGE: ${{ steps.ko_build.outputs.image }}
           TAG: ${{ steps.version.outputs.tag }}
           REPO_PATH: ${{ github.repository }}
+          # The registry's anonymous token endpoint only ever grants `pull`, so
+          # moving a tag requires the login token used by docker/login-action.
+          # Fetching a token anonymously here fails with a bare 403.
+          GH_TOKEN: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           accept='application/vnd.oci.image.index.v1+json'
-          token=$(curl -fsSL "https://ghcr.io/token?scope=repository:${REPO_PATH}:pull,push&service=ghcr.io" | jq -r .token)
+          token="$GH_TOKEN"
           digest="${IMAGE##*@}"
           manifest=$(curl -fsSL \
             -H "Authorization: Bearer $token" -H "Accept: $accept" \
