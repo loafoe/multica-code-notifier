@@ -5,9 +5,16 @@ name: Build and Push OCI Images
 # via GitHub OIDC -- there is no long-lived signing key on any machine or in the
 # repository.
 #
-# Mirrors the pattern already used for the other images in this org
-# (prometheus-p1-exporter/.github/workflows/build-and-push.yml) so the supply
-# chain looks identical across repos.
+# Tagging rules (see the "Resolve version" step for the enforcement):
+#
+#   push refs/tags/vX.Y.Z    -> publishes the immutable version tag X.Y.Z,
+#                                plus `latest` when it is a STABLE release
+#   push to main              -> publishes the mutable `main` tag only; it never
+#                                touches `latest` or any version tag
+#
+# A version tag that already exists in the registry is a hard failure. Rebuilding
+# a published version is not allowed, because `git tag --force` makes it trivial
+# to do by accident and consumers pin tags.
 on:
   push:
     branches: ['main']
@@ -17,6 +24,13 @@ permissions:
   contents: read
   packages: write
   id-token: write # needed for keyless signing
+
+env:
+  REGISTRY: ghcr.io
+  # ko's DEFAULT naming is ${KO_DOCKER_REPO}/<package>-<hash-of-import-path>.
+  # With --bare below, KO_DOCKER_REPO is used verbatim, so it must be the FULL
+  # repository path.
+  KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
 
 jobs:
   build-and-push:
@@ -43,19 +57,76 @@ jobs:
       # ghcr.io answers a blob HEAD with 403 (not 404) for a blob that does not
       # exist in a PRIVATE package, and go-containerregistry -- which ko uses to
       # upload -- treats that as a hard error. Packages created by GITHUB_TOKEN
-      # inherit the repository's visibility, so in a PRIVATE repository the
-      # default token cannot upload anything new; it only succeeds while every
-      # layer happens to be cached from an earlier push.
-      #
-      # So: prefer a PAT (GHCR_TOKEN secret, needs write:packages) and fall back
-      # to GITHUB_TOKEN, which is all that is needed once the repository (and
-      # therefore the package) is public.
+      # inherit the repository's visibility, so this is only correct while the
+      # package is PUBLIC. GHCR_TOKEN (a PAT with write:packages) is the escape
+      # hatch for a private package.
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version
+        id: version
+        env:
+          REPO_PATH: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Strict semver, with an optional leading `v`:
+          #   MAJOR.MINOR.PATCH  [-prerelease]  [+build]
+          # No leading zeros in the numeric fields.
+          SEMVER='^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            GIT_TAG="${GITHUB_REF#refs/tags/}"
+            if ! [[ "$GIT_TAG" =~ $SEMVER ]]; then
+              echo "::error::'$GIT_TAG' is not a valid semantic version tag (want vMAJOR.MINOR.PATCH[-prerelease][+build])"
+              exit 1
+            fi
+            TAG="$GIT_TAG"
+            VERSION="${GIT_TAG#v}"
+            IS_RELEASE=true
+            if [[ "$VERSION" == *-* ]]; then
+              IS_PRERELEASE=true
+            else
+              IS_PRERELEASE=false
+            fi
+          else
+            # A plain `main` push is a development build, NOT a release. It gets
+            # its own tag and must never be presented as a version.
+            TAG="main"
+            VERSION="main"
+            IS_RELEASE=false
+            IS_PRERELEASE=false
+          fi
+
+          echo "version=$VERSION"      >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"              >> "$GITHUB_OUTPUT"
+          echo "is_release=$IS_RELEASE"      >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+
+          # Released versions are immutable. Fetch an anonymous pull token for
+          # the check -- a 401 here means "not published", which is the answer
+          # we want, and it keeps this step independent of the login token.
+          if [ "$IS_RELEASE" = "true" ]; then
+            probe=$(curl -fsSL "https://ghcr.io/token?scope=repository:${REPO_PATH}:pull&service=ghcr.io" \
+              | jq -r .token || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${probe:-none}" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json' \
+              "https://ghcr.io/v2/${REPO_PATH}/manifests/${TAG}")
+            if [ "$code" = "200" ]; then
+              echo "::error::${TAG} is already published. Version tags are immutable."
+              echo "::error::If this was a mistake, delete the registry tag and the local"
+              echo "::error::git tag, push a NEW version instead of force-moving this one."
+              exit 1
+            fi
+            echo "immutability check: ${TAG} not yet published (HTTP $code)"
+          fi
+
+          echo "building version=$VERSION tag=$TAG release=$IS_RELEASE prerelease=$IS_PRERELEASE"
 
       # NOTE: no --sbom. ko uploads the SBOM through go-containerregistry, which
       # HEAD-probes the blob first, and ghcr.io answers a HEAD for a blob that
@@ -66,31 +137,15 @@ jobs:
       #     ko build --sbom-dir sbom --bare --push=false --tags v0.1.0 .
       - name: Build and Push
         id: ko_build
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          # Determine the tag
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            TAG=${GITHUB_REF#refs/tags/}
-          else
-            TAG=latest
-          fi
-
-          # Build and push using ko
-          # --platform to specify the architectures
-          # --bare so KO_DOCKER_REPO is used verbatim as the repository instead
-          # of ko's default '<package>-<import-path-hash>' name
           # --tags takes a BARE TAG; passing a full image reference makes ko
           # prepend its own computed tag and fail with
           # 'repository can only contain the characters ...'
-          # --image-refs, not $(ko build ...): ko writes the published digest to
-          # STDERR, so command substitution captures nothing and cosign is
-          # then invoked with zero arguments. Writing the refs to a file is
-          # explicit and version-independent.
-          # --sbom=none is REQUIRED and is not just an optimisation: ko enables
-          # SBOM publishing BY DEFAULT. Its upload path HEAD-probes the SBOM blob
-          # first and ghcr.io answers a HEAD for a blob that does not exist with
-          # 403 Forbidden rather than 404, which go-containerregistry treats as
-          # fatal. Note --sbom-dir alone does not help -- ko still uploads when
-          # --push is on. The image push takes a different path and is fine.
+          # --sbom=none: ko publishes SBOMs BY DEFAULT, and that upload path
+          # trips over the ghcr 403 described above. --sbom-dir alone does not
+          # help -- ko still uploads when --push is on.
           KO_DOCKER_REPO=ghcr.io/${{ github.repository }} ko build \
             --sbom=none \
             --bare \
@@ -110,10 +165,37 @@ jobs:
           echo "signing $image"
           echo "image=$image" >> "$GITHUB_OUTPUT"
 
+      # Move `latest` onto a stable release by copying the manifest bytes under
+      # the new tag. A plain manifest GET/PUT is enough (no blob uploads, the
+      # layers already exist) and avoids a second full ko build, which would
+      # produce a different digest than the one just signed.
+      - name: Move latest (stable releases only)
+        if: steps.version.outputs.is_release == 'true' && steps.version.outputs.is_prerelease == 'false'
+        env:
+          IMAGE: ${{ steps.ko_build.outputs.image }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO_PATH: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          accept='application/vnd.oci.image.index.v1+json'
+          token=$(curl -fsSL "https://ghcr.io/token?scope=repository:${REPO_PATH}:pull,push&service=ghcr.io" | jq -r .token)
+          digest="${IMAGE##*@}"
+          manifest=$(curl -fsSL \
+            -H "Authorization: Bearer $token" -H "Accept: $accept" \
+            "https://ghcr.io/v2/${REPO_PATH}/manifests/${digest}")
+          curl -fsS -o /dev/null -X PUT \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: $accept" \
+            --data-binary "$manifest" \
+            "https://ghcr.io/v2/${REPO_PATH}/manifests/latest"
+          echo "latest -> ${TAG}@${digest}"
+
       # Sign the digest ko printed, rather than reconstructing a tag: the output
       # is the exact multi-arch index digest that consumers pull.
       - name: Sign the images
-        run: cosign sign --yes ${{ steps.ko_build.outputs.image }}
+        env:
+          IMAGE: ${{ steps.ko_build.outputs.image }}
+        run: cosign sign --yes "$IMAGE"
 
       # Proves the signature is really there and carries the workflow identity,
       # rather than trusting that the sign step succeeded.
@@ -130,4 +212,17 @@ jobs:
             echo '```'
             cat cosign-output.txt
             echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| image | \`${{ steps.ko_build.outputs.image }}\` |"
+            echo "| tag | \`${{ steps.version.outputs.tag }}\` |"
+            echo "| release | \`${{ steps.version.outputs.is_release }}\` |"
+            echo "| prerelease | \`${{ steps.version.outputs.is_prerelease }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
