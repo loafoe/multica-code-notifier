@@ -91,12 +91,23 @@ jobs:
           # 'repository can only contain the characters ...'. --bare makes
           # KO_DOCKER_REPO the repository verbatim instead of appending ko's
           # default '<package>-<import-path-hash>' suffix.
+          # --sbom-dir (not --sbom): with --bare, --sbom still tries to push
+          # the SBOM under ko's DEFAULT repo name (the '<package>-<hash>' one),
+          # which is a repository that does not exist -> 403 Forbidden. Writing
+          # them to disk and attaching them as a workflow artifact keeps the
+          # SBOM without depending on that behaviour.
           ko build \
-            --sbom \
+            --sbom-dir sbom \
             --bare \
             --platform=linux/arm64,linux/amd64 \
             --tags "$TAG" \
             .
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom/
 
       # Sign the index, not the per-platform manifests: a consumer verifies the
       # digest it pulls, and signing only the arch-specific manifests would
