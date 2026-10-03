@@ -63,8 +63,8 @@ spec:
           #   cosign verify \
           #     --certificate-identity-regexp '^https://github.com/<owner>/multica-code-notifier/' \
           #     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-          #     ghcr.io/<owner>/multica-code-notifier@sha256:02235de17d4e470847b9b501b6951458c604283ce6f7b0e8d032e60bf98f4aaf
-          image: ghcr.io/loafoe/multica-code-notifier@sha256:02235de17d4e470847b9b501b6951458c604283ce6f7b0e8d032e60bf98f4aaf
+          #     ghcr.io/<owner>/multica-code-notifier@sha256:<digest>
+          image: ghcr.io/loafoe/multica-code-notifier@sha256:88aeacaa32cc43a1253ec873b43a496969845adfdf0370085958e6ebc4ff20ae
           imagePullPolicy: IfNotPresent
           env:
             # --- Postgres. The default below is the CloudNativePG read-write

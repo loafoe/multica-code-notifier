@@ -64,19 +64,35 @@ SBOM in a single step.
 
 ```bash
 KO_DOCKER_REPO=ghcr.io/<owner>/multica-code-notifier \
-  ko build --sbom-dir sbom --bare --platform=linux/arm64,linux/amd64 --tags v0.1.0 .
+  ko build --sbom-dir sbom --bare --platform=linux/arm64,linux/amd64 --tags v0.1.3 .
 ```
 
-Releases go through `.github/workflows/release.yaml` (push a `v*` tag), which
-also **cosign-signs keylessly** via GitHub OIDC — there is no long-lived signing
-key on any machine or in the repository — and verifies its own signature before
-reporting success:
+Releases go through `.github/workflows/release.yaml`, which **cosign-signs
+keylessly** via GitHub OIDC — no signing key exists on any machine or in the
+repository — and verifies its own signature before reporting success.
+
+### Tags
+
+| Trigger | Publishes | `latest` |
+|---|---|---|
+| push `v0.1.3` | `v0.1.3` | moved, if the version is stable |
+| push `v0.2.0-rc.1` | `v0.2.0-rc.1` | untouched |
+| push to `main` | `main` | untouched |
+
+- Tags are validated as strict semver (`vMAJOR.MINOR.PATCH[-prerelease][+build]`,
+  no leading zeros). `v1.2` and `latest` are rejected outright.
+- **A published version is immutable.** Re-pushing an existing version fails the
+  build: `git tag --force` makes accidental republishing trivial, and consumers
+  pin tags. Fix forward with a new version instead.
+- `main` is a development build and never masquerades as a version. `latest`
+  tracks the newest **stable** release only, so it is not the moving target it
+  would be if every commit updated it.
 
 ```bash
 cosign verify \
   --certificate-identity-regexp '^https://github.com/<owner>/multica-code-notifier/' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  ghcr.io/<owner>/multica-code-notifier:v0.1.0
+  ghcr.io/<owner>/multica-code-notifier:v0.1.3
 ```
 
 ### Registry credentials
