@@ -1,9 +1,9 @@
 name: release
 
-# ko cross-compiles a static binary for linux/amd64 + linux/arm64, emits an SPDX
-# SBOM, pushes a multi-arch index to ghcr.io, and cosign signs the index
-# digest keylessly using this workflow's GitHub OIDC token -- there is no
-# long-lived signing key anywhere, and no ~/.cosign on any machine.
+# ko cross-compiles a static binary for linux/amd64 + linux/arm64, emits SPDX
+# SBOMs, pushes a multi-arch index to ghcr.io, and cosign signs the index digest
+# keylessly using this workflow's GitHub OIDC token -- there is no long-lived
+# signing key anywhere, and no ~/.cosign on any machine.
 #
 # Trigger by pushing a tag; the tag becomes the image tag.
 on:
@@ -13,15 +13,15 @@ on:
 permissions:
   contents: read
   packages: write
-  # Required for cosign keyless: mints the OIDC token that becomes the
-  # Fulcio certificate's identity claim.
+  # Required for cosign keyless: mints the OIDC token that becomes the Fulcio
+  # certificate's identity claim.
   id-token: write
 
 env:
   REGISTRY: ghcr.io
-  # ko's DEFAULT naming is ${KO_DOCKER_REPO}/<package>-<hash-of-import-path>,
-  # i.e. .../multica-code-notifier-2f7380b8... . Combined with --bare below,
-  # KO_DOCKER_REPO is used verbatim, so it must be the FULL repository path.
+  # ko's DEFAULT naming is ${KO_DOCKER_REPO}/<package>-<hash-of-import-path>.
+  # With --bare below, KO_DOCKER_REPO is used verbatim, so it must be the FULL
+  # repository path.
   KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
 
 jobs:
@@ -31,8 +31,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # REQUIRED for ko: with the default fetch-depth: 1 the git tag is not
-          # present, so ko falls back to its git-state-derived tag
-          # (multica-code-notifier-<sha>) and --tags then conflicts with it.
+          # present, so ko falls back to its git-state-derived tag.
           fetch-depth: 0
 
       - uses: actions/setup-go@v5
@@ -44,8 +43,9 @@ jobs:
 
       # ko is installed from its GitHub release tarball. The documented
       # `curl https://ko.build/install.sh` is a 404 as of v0.19.1, and the
-      # community setup-ko actions have moved/been deleted before -- pinning
-      # the release asset keeps the toolchain auditable and reproducible.
+      # community setup-ko actions have moved or been deleted before. Pinning
+      # the version keeps the toolchain reproducible, and the release checksum
+      # is verified before the binary is executed.
       - name: Install ko
         env:
           KO_VERSION: v0.19.1
@@ -58,15 +58,12 @@ jobs:
           WORK="$(mktemp -d)"
           curl -fsSLo "${WORK}/${ASSET}" \
             "https://github.com/ko-build/ko/releases/download/${KO_VERSION}/${ASSET}"
-          # Verify the release checksum before running the binary. The check
-          # reads the asset by name, so it has to run where the file is.
+          # The check reads the asset by name, so it runs where the file is.
           curl -fsSL "https://github.com/ko-build/ko/releases/download/${KO_VERSION}/checksums.txt" \
             | grep " ${ASSET}\$" > "${WORK}/checksums.txt"
           ( cd "$WORK" && sha256sum --check checksums.txt )
           tar -C /usr/local/bin -xzf "${WORK}/${ASSET}" ko
           ko version
-
-      - uses: docker/setup-buildx-action@v3
 
       - name: Log in to ghcr
         uses: docker/login-action@v3
@@ -75,27 +72,48 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Make the tag available to ko as the image tag. ko derives the repository
-      # from KO_DOCKER_REPO + the Go import path, and the tag from the git tag.
       - name: Resolve image tag
         id: meta
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
+      # ghcr.io answers a blob HEAD with 403 rather than 404 for a blob that
+      # does not exist yet, and go-containerregistry (inside ko) treats that as
+      # a hard error instead of "upload it". So confirm up front that this token
+      # can actually reach the target package, and fail with a clear message
+      # rather than 60 seconds into a build.
+      - name: Check registry access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_PATH: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GHCR_TOKEN" \
+            "https://ghcr.io/v2/${REPO_PATH}/tags/list")
+          echo "ghcr tags/list -> $code"
+          if [ "$code" != "200" ]; then
+            echo "::error::The workflow token cannot read ghcr.io/$REPO_PATH (HTTP $code)."
+            echo "::error::For a package created by a different token this usually means the"
+            echo "::error::package is not linked to this repository: link it under"
+            echo "::error::Settings > Packages, or set a GHCR_TOKEN secret holding a PAT"
+            echo "::error::with write:packages."
+            exit 1
+          fi
+
+      # --tags takes a BARE TAG, not a full image reference: passing
+      # "$IMAGE:$TAG" makes ko prepend its own computed tag and fails with
+      # 'repository can only contain the characters ...'. --bare makes
+      # KO_DOCKER_REPO the repository verbatim instead of appending ko's default
+      # '<package>-<import-path-hash>' suffix.
+      #
+      # --sbom-dir, not --sbom: with --bare, --sbom still pushes the SBOM under
+      # ko's DEFAULT repo name, which does not exist. Writing them to disk and
+      # attaching them as a workflow artifact keeps the SBOM without depending on
+      # that behaviour.
       - name: Build and push (multi-arch, with SBOM)
         env:
           TAG: ${{ steps.meta.outputs.tag }}
-          IMAGE: ${{ env.KO_DOCKER_REPO }}/${{ github.repository }}
         run: |
-          # --tags takes a BARE TAG, not a full image reference: passing
-          # "$IMAGE:$TAG" makes ko prepend its own computed tag and fails with
-          # 'repository can only contain the characters ...'. --bare makes
-          # KO_DOCKER_REPO the repository verbatim instead of appending ko's
-          # default '<package>-<import-path-hash>' suffix.
-          # --sbom-dir (not --sbom): with --bare, --sbom still tries to push
-          # the SBOM under ko's DEFAULT repo name (the '<package>-<hash>' one),
-          # which is a repository that does not exist -> 403 Forbidden. Writing
-          # them to disk and attaching them as a workflow artifact keeps the
-          # SBOM without depending on that behaviour.
           ko build \
             --sbom-dir sbom \
             --bare \
@@ -115,7 +133,7 @@ jobs:
       - name: Sign (keyless)
         env:
           TAG: ${{ steps.meta.outputs.tag }}
-          IMAGE: ${{ env.KO_DOCKER_REPO }}/${{ github.repository }}
+          IMAGE: ${{ env.KO_DOCKER_REPO }}
         run: cosign sign --yes "$IMAGE:$TAG"
 
       # Proves the signature is actually there and carries the workflow
@@ -123,7 +141,7 @@ jobs:
       - name: Verify signature
         env:
           TAG: ${{ steps.meta.outputs.tag }}
-          IMAGE: ${{ env.KO_DOCKER_REPO }}/${{ github.repository }}
+          IMAGE: ${{ env.KO_DOCKER_REPO }}
         run: |
           cosign verify \
             --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
@@ -132,7 +150,7 @@ jobs:
           # Surface the digest + signature in the job summary so it is visible
           # without re-running cosign locally.
           {
-            echo "### cosign"
+            echo "### cosign verify"
             echo '```'
             cat cosign-output.txt
             echo '```'
@@ -142,7 +160,7 @@ jobs:
         if: success()
         env:
           TAG: ${{ steps.meta.outputs.tag }}
-          IMAGE: ${{ env.KO_DOCKER_REPO }}/${{ github.repository }}
+          IMAGE: ${{ env.KO_DOCKER_REPO }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
