@@ -75,7 +75,14 @@ jobs:
           # STDERR, so command substitution captures nothing and cosign is
           # then invoked with zero arguments. Writing the refs to a file is
           # explicit and version-independent.
+          # --sbom=none is REQUIRED and is not just an optimisation: ko enables
+          # SBOM publishing BY DEFAULT. Its upload path HEAD-probes the SBOM blob
+          # first and ghcr.io answers a HEAD for a blob that does not exist with
+          # 403 Forbidden rather than 404, which go-containerregistry treats as
+          # fatal. Note --sbom-dir alone does not help -- ko still uploads when
+          # --push is on. The image push takes a different path and is fine.
           KO_DOCKER_REPO=ghcr.io/${{ github.repository }} ko build \
+            --sbom=none \
             --bare \
             --image-refs image-refs.txt \
             --platform=linux/amd64,linux/arm64 \
