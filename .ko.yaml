@@ -1,0 +1,14 @@
+# ko is the build tool here: it cross-compiles a static binary, emits SBOMs and
+# produces a multi-arch index in one step, so the same Dockerfile-free build
+# covers the arm64 Pis and the amd64 `micro` node.
+defaultBaseImage: cgr.dev/chainguard/static
+baseImageOverrides:
+  # Go binaries need nothing from the runtime image beyond CA certificates
+  # (for api.telegram.org), which the static chainguard base already has.
+  - image: cgr.dev/chainguard/static
+    platforms:
+      - linux/arm64
+      - linux/amd64
+defaultPlatforms:
+  - linux/arm64
+  - linux/amd64
