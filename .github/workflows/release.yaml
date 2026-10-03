@@ -82,9 +82,12 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
           IMAGE: ${{ env.KO_DOCKER_REPO }}/${{ github.repository }}
         run: |
+          # NOTE: no --bare. --bare makes ko derive the repository from the
+          # tag and ignore the Go import path, which both conflicts with
+          # --tags and appends a git-state hash
+          # (multica-code-notifier-54748c9f...) to the image name.
           ko build \
             --sbom \
-            --bare \
             --platform=linux/arm64,linux/amd64 \
             --tags "$IMAGE:$TAG" \
             .
