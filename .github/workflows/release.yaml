@@ -19,11 +19,10 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  # ko resolves the image name as KO_DOCKER_REPO + the Go import path, so this
-  # must be the bare registry. With KO_DOCKER_REPO=ghcr.io/<org> AND
-  # github.repository=<org>/<repo> you get the double-prefixed
-  # ghcr.io/<org>/<org>/multica-code-notifier.
-  KO_DOCKER_REPO: ghcr.io
+  # ko's DEFAULT naming is ${KO_DOCKER_REPO}/<package>-<hash-of-import-path>,
+  # i.e. .../multica-code-notifier-2f7380b8... . Combined with --bare below,
+  # KO_DOCKER_REPO is used verbatim, so it must be the FULL repository path.
+  KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
 
 jobs:
   build-sign-verify:
@@ -87,14 +86,16 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
           IMAGE: ${{ env.KO_DOCKER_REPO }}/${{ github.repository }}
         run: |
-          # NOTE: no --bare. --bare makes ko derive the repository from the
-          # tag and ignore the Go import path, which both conflicts with
-          # --tags and appends a git-state hash
-          # (multica-code-notifier-54748c9f...) to the image name.
+          # --tags takes a BARE TAG, not a full image reference: passing
+          # "$IMAGE:$TAG" makes ko prepend its own computed tag and fails with
+          # 'repository can only contain the characters ...'. --bare makes
+          # KO_DOCKER_REPO the repository verbatim instead of appending ko's
+          # default '<package>-<import-path-hash>' suffix.
           ko build \
             --sbom \
+            --bare \
             --platform=linux/arm64,linux/amd64 \
-            --tags "$IMAGE:$TAG" \
+            --tags "$TAG" \
             .
 
       # Sign the index, not the per-platform manifests: a consumer verifies the

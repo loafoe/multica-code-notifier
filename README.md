@@ -59,7 +59,8 @@ publishes a multi-arch index (`linux/amd64` and `linux/arm64`) with an SPDX
 SBOM in a single step.
 
 ```bash
-KO_DOCKER_REPO=ghcr.io ko build --sbom --platform=linux/arm64,linux/amd64 .
+KO_DOCKER_REPO=ghcr.io/<owner>/multica-code-notifier \
+  ko build --sbom --bare --platform=linux/arm64,linux/amd64 --tags v0.1.0 .
 ```
 
 Releases go through `.github/workflows/release.yaml` (push a `v*` tag), which
