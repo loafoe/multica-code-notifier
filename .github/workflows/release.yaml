@@ -1,144 +1,96 @@
-name: release
+name: Build and Push OCI Images
 
-# ko cross-compiles a static binary for linux/amd64 + linux/arm64, emits SPDX
-# SBOMs, pushes a multi-arch index to ghcr.io, and cosign signs the index digest
-# keylessly using this workflow's GitHub OIDC token -- there is no long-lived
-# signing key anywhere, and no ~/.cosign on any machine.
+# ko cross-compiles a static binary for linux/amd64 + linux/arm64, pushes a
+# multi-arch index to ghcr.io, and cosign signs the resulting digest keylessly
+# via GitHub OIDC -- there is no long-lived signing key on any machine or in the
+# repository.
 #
-# Trigger by pushing a tag; the tag becomes the image tag.
+# Mirrors the pattern already used for the other images in this org
+# (prometheus-p1-exporter/.github/workflows/build-and-push.yml) so the supply
+# chain looks identical across repos.
 on:
   push:
+    branches: ['main']
     tags: ['v*']
 
 permissions:
   contents: read
   packages: write
-  # Required for cosign keyless: mints the OIDC token that becomes the Fulcio
-  # certificate's identity claim.
-  id-token: write
-
-env:
-  REGISTRY: ghcr.io
-  # ko's DEFAULT naming is ${KO_DOCKER_REPO}/<package>-<hash-of-import-path>.
-  # With --bare below, KO_DOCKER_REPO is used verbatim, so it must be the FULL
-  # repository path.
-  KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
+  id-token: write # needed for keyless signing
 
 jobs:
-  build-sign-verify:
+  build-and-push:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          # REQUIRED for ko: with the default fetch-depth: 1 the git tag is not
-          # present, so ko falls back to its git-state-derived tag.
+          # REQUIRED for ko: at the default fetch-depth: 1 the tag is absent.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
-      - uses: sigstore/cosign-installer@v3
-
-      # ko is installed from its GitHub release tarball. The documented
-      # `curl https://ko.build/install.sh` is a 404 as of v0.19.1, and the
-      # community setup-ko actions have moved or been deleted before. Pinning
-      # the version keeps the toolchain reproducible, and the release checksum
-      # is verified before the binary is executed.
       - name: Install ko
-        env:
-          KO_VERSION: v0.19.1
-        run: |
-          set -euo pipefail
-          # NOTE: the release ASSET drops the leading `v` from the tag
-          # (ko_v0.19.1_... for the tag, but ko_0.19.1_... for the file), which
-          # is an easy way to get a silent 404 here.
-          ASSET="ko_${KO_VERSION#v}_Linux_x86_64.tar.gz"
-          WORK="$(mktemp -d)"
-          curl -fsSLo "${WORK}/${ASSET}" \
-            "https://github.com/ko-build/ko/releases/download/${KO_VERSION}/${ASSET}"
-          # The check reads the asset by name, so it runs where the file is.
-          curl -fsSL "https://github.com/ko-build/ko/releases/download/${KO_VERSION}/checksums.txt" \
-            | grep " ${ASSET}\$" > "${WORK}/checksums.txt"
-          ( cd "$WORK" && sha256sum --check checksums.txt )
-          tar -C /usr/local/bin -xzf "${WORK}/${ASSET}" ko
-          ko version
+        uses: ko-build/setup-ko@v0.6
 
-      - name: Log in to ghcr
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.5.0
+
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve image tag
-        id: meta
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-
-      # --tags takes a BARE TAG, not a full image reference: passing
-      # "$IMAGE:$TAG" makes ko prepend its own computed tag and fails with
-      # 'repository can only contain the characters ...'. --bare makes
-      # KO_DOCKER_REPO the repository verbatim instead of appending ko's default
-      # '<package>-<import-path-hash>' suffix.
-      #
-      # --sbom=none: ko's SBOM publishing path fails against ghcr.io. It
-      # uploads the SBOM with go-containerregistry, which HEAD-probes the blob
-      # first, and ghcr answers a HEAD for a blob that does not exist with 403
-      # Forbidden rather than 404 -- an error go-containerregistry treats as
-      # fatal. The image push uses a different path and is unaffected.
-      # `--sbom-dir sbom` alone does NOT avoid this: ko still uploads the SBOM
-      # when --push is on. Build SBOMs locally when needed:
-      #   ko build --sbom-dir sbom --bare --push=false ...
-      - name: Build and push (multi-arch)
-        env:
-          TAG: ${{ steps.meta.outputs.tag }}
+      # NOTE: no --sbom. ko uploads the SBOM through go-containerregistry, which
+      # HEAD-probes the blob first, and ghcr.io answers a HEAD for a blob that
+      # does not exist yet with 403 Forbidden instead of 404 -- an error
+      # go-containerregistry treats as fatal. The image push takes a different
+      # path and is unaffected. Generate an SBOM locally when one is needed:
+      #   KO_DOCKER_REPO=ghcr.io/<owner>/multica-code-notifier \
+      #     ko build --sbom-dir sbom --bare --push=false --tags v0.1.0 .
+      - name: Build and Push
+        id: ko_build
         run: |
-          ko build \
-            --sbom=none \
-            --bare \
-            --platform=linux/arm64,linux/amd64 \
-            --tags "$TAG" \
-            .
+          # Determine the tag
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            TAG=${GITHUB_REF#refs/tags/}
+          else
+            TAG=latest
+          fi
 
-      # Sign the index, not the per-platform manifests: a consumer verifies the
-      # digest it pulls, and signing only the arch-specific manifests would
-      # leave the multi-arch index itself unsigned.
-      - name: Sign (keyless)
-        env:
-          TAG: ${{ steps.meta.outputs.tag }}
-          IMAGE: ${{ env.KO_DOCKER_REPO }}
-        run: cosign sign --yes "$IMAGE:$TAG"
+          # Build and push using ko
+          # --platform to specify the architectures
+          # --bare so KO_DOCKER_REPO is used verbatim as the repository instead
+          # of ko's default '<package>-<import-path-hash>' name
+          # --tags takes a BARE TAG; passing a full image reference makes ko
+          # prepend its own computed tag and fail with
+          # 'repository can only contain the characters ...'
+          echo "image=$(KO_DOCKER_REPO=ghcr.io/${{ github.repository }} ko build --bare --platform=linux/amd64,linux/arm64 --tags=${TAG} .)" >> "$GITHUB_OUTPUT"
 
-      # Proves the signature is actually there and carries the workflow
-      # identity, rather than trusting that the sign step succeeded.
+      # Sign the digest ko printed, rather than reconstructing a tag: the output
+      # is the exact multi-arch index digest that consumers pull.
+      - name: Sign the images
+        run: cosign sign --yes ${{ steps.ko_build.outputs.image }}
+
+      # Proves the signature is really there and carries the workflow identity,
+      # rather than trusting that the sign step succeeded.
       - name: Verify signature
         env:
-          TAG: ${{ steps.meta.outputs.tag }}
-          IMAGE: ${{ env.KO_DOCKER_REPO }}
+          IMAGE: ${{ steps.ko_build.outputs.image }}
         run: |
           cosign verify \
             --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "$IMAGE:$TAG" | tee cosign-output.txt
-          # Surface the digest + signature in the job summary so it is visible
-          # without re-running cosign locally.
+            "$IMAGE" | tee cosign-output.txt
           {
             echo "### cosign verify"
             echo '```'
             cat cosign-output.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Notify
-        if: success()
-        env:
-          TAG: ${{ steps.meta.outputs.tag }}
-          IMAGE: ${{ env.KO_DOCKER_REPO }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
-          curl -sS -X POST -H 'Content-Type: application/json' \
-            -d "$(jq -nc --arg t "$IMAGE:$TAG" \
-                 '{text: "multica-code-notifier published and signed: " + $t}')" \
-            "$SLACK_WEBHOOK_URL"
