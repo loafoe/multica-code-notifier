@@ -98,7 +98,20 @@ jobs:
             --platform=linux/amd64,linux/arm64 \
             --tags="${TAG}" \
             .
-          echo "image=$(cat image-refs.txt)" >> "$GITHUB_OUTPUT"
+          # --image-refs lists EVERY published reference: the multi-arch index
+          # (which carries the tag) followed by one untagged manifest per
+          # platform. Reading the whole file produces a multi-line value and
+          # GitHub rejects it as 'Invalid format ...' when writing to
+          # GITHUB_OUTPUT, so select the index line explicitly and assert we
+          # got exactly one.
+          image=$(grep -m1 ":${TAG}@" image-refs.txt)
+          lines=$(wc -l < image-refs.txt)
+          echo "image-refs.txt has $lines references; signing ${image}"
+          if [ -z "$image" ]; then
+            echo "::error::no index reference for tag ${TAG} in image-refs.txt"
+            exit 1
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
 
       # Sign the digest ko printed, rather than reconstructing a tag: the output
       # is the exact multi-arch index digest that consumers pull.
