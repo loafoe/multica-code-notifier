@@ -38,12 +38,28 @@ jobs:
 
       - uses: sigstore/cosign-installer@v3
 
-      # ko is installed from its own release script rather than a setup action:
-      # the community setup-ko actions have moved/been deleted before, and this
-      # keeps the toolchain auditable to ko.build alone.
+      # ko is installed from its GitHub release tarball. The documented
+      # `curl https://ko.build/install.sh` is a 404 as of v0.19.1, and the
+      # community setup-ko actions have moved/been deleted before -- pinning
+      # the release asset keeps the toolchain auditable and reproducible.
       - name: Install ko
+        env:
+          KO_VERSION: v0.19.1
         run: |
-          curl -fsSL https://ko.build/install.sh | sh -s -- -b "$HOME/bin" latest
+          set -euo pipefail
+          # NOTE: the release ASSET drops the leading `v` from the tag
+          # (ko_v0.19.1_... for the tag, but ko_0.19.1_... for the file), which
+          # is an easy way to get a silent 404 here.
+          ASSET="ko_${KO_VERSION#v}_Linux_x86_64.tar.gz"
+          WORK="$(mktemp -d)"
+          curl -fsSLo "${WORK}/${ASSET}" \
+            "https://github.com/ko-build/ko/releases/download/${KO_VERSION}/${ASSET}"
+          # Verify the release checksum before running the binary. The check
+          # reads the asset by name, so it has to run where the file is.
+          curl -fsSL "https://github.com/ko-build/ko/releases/download/${KO_VERSION}/checksums.txt" \
+            | grep " ${ASSET}\$" > "${WORK}/checksums.txt"
+          ( cd "$WORK" && sha256sum --check checksums.txt )
+          tar -C /usr/local/bin -xzf "${WORK}/${ASSET}" ko
           ko version
 
       - uses: docker/setup-buildx-action@v3
