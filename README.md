@@ -25,7 +25,7 @@ Runs as a single Deployment next to multica. It needs no Service, no Ingress
 and no Kubernetes API access.
 
 ```bash
-./deploy/secrets.sh                       # registry pull secret + Telegram credentials
+./deploy/secrets.sh                       # Telegram credentials only
 kubectl apply -f deploy/20-deployment.yaml
 ```
 
@@ -95,16 +95,36 @@ cosign verify \
   ghcr.io/<owner>/multica-code-notifier:v0.1.3
 ```
 
-### Registry credentials
+### The image is public — no credentials needed anywhere
 
-The workflow prefers a `GHCR_TOKEN` secret (a PAT with `write:packages`) and
-falls back to `secrets.GITHUB_TOKEN`. The fallback is enough only when the
-package is **public**: ghcr.io answers a blob `HEAD` with `403` rather than `404`
-for a blob that does not exist in a private package — deliberately, so it does
-not leak which blobs exist — and go-containerregistry, which ko uses to upload,
-treats that as fatal. Packages created by `GITHUB_TOKEN` inherit the
-repository's visibility, so in a **private** repository the default token can
-only push while every layer happens to be cached.
+The package is published **public**, so the kubelet pulls the image anonymously
+and the Deployment needs no `imagePullSecrets`.
+
+Check this properly, because the obvious test lies: requesting
+`/v2/<repo>/manifests/<tag>` directly returns **401 whatever the visibility** —
+that is the pre-auth `WWW-Authenticate` challenge every registry returns, and it
+looks identical to "private". Exchange an anonymous token first:
+
+```bash
+t=$(curl -s "https://ghcr.io/token?service=ghcr.io&scope=repository:<owner>/<repo>:pull" | jq -r .token)
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $t" \
+  -H "Accept: application/vnd.oci.image.index.v1+json" \
+  "https://ghcr.io/v2/<owner>/<repo>/manifests/<tag>"      # 200 = public
+```
+
+Beware also that the package's **web page** 404s when the linked source
+repository is private, because GitHub gates that UI on repo visibility. Page
+visibility and registry pull access are independent.
+
+That is also why a plain `GITHUB_TOKEN` is enough here — no PAT secret is
+needed, because the repository (and therefore the package) is public. On a
+*private* package it would not be: ghcr answers a blob `HEAD` with `403` rather
+than `404` (deliberately, so it does not leak which blobs exist) and
+go-containerregistry — which ko uses to upload — treats that as fatal. Packages
+created by `GITHUB_TOKEN` inherit the repository's visibility, so a private
+repository produces a private package that the default token can only push while
+every layer happens to be cached. In that case set a `GHCR_TOKEN` secret (a PAT
+with `write:packages`); the workflow prefers it and falls back to `GITHUB_TOKEN`.
 
 Two flags matter and both are load-bearing:
 

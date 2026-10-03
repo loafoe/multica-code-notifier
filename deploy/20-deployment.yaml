@@ -53,8 +53,6 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
-      imagePullSecrets:
-        - name: ghcr
       containers:
         - name: notifier
           # Digest-pinned. The release workflow runs on every push to main, so
