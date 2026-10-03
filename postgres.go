@@ -77,7 +77,7 @@ func connect(ctx context.Context, cfg *config) (*pgx.Conn, error) {
 	u.RawQuery = q.Encode()
 
 	// application_name shows up in pg_stat_activity, which makes it obvious in
-	// Mimir/Grafana if this ever starts holding connections open.
+	// `pg_stat_activity` if this ever starts holding connections open.
 	cfgCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	conn, err := pgx.ConnectConfig(cfgCtx, mustParse(cfg, u.String()))
