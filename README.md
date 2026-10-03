@@ -29,8 +29,7 @@ and no Kubernetes API access.
 kubectl apply -f deploy/20-deployment.yaml
 ```
 
-`deploy/secrets.sh` needs a GitHub token (`gh auth token`) for the registry
-secret, and Telegram credentials from one of:
+`deploy/secrets.sh` needs Telegram credentials from one of:
 
 | Source | How |
 |---|---|
@@ -112,24 +111,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $t" \
   "https://ghcr.io/v2/<owner>/<repo>/manifests/<tag>"      # 200 = public
 ```
 
-Beware also that the package's **web page** 404s when the linked source
-repository is private, because GitHub gates that UI on repo visibility. Page
-visibility and registry pull access are independent.
-
-That is also why a plain `GITHUB_TOKEN` is enough here — no PAT secret is
-needed, because the repository (and therefore the package) is public. On a
-*private* package it would not be: ghcr answers a blob `HEAD` with `403` rather
-than `404` (deliberately, so it does not leak which blobs exist) and
-go-containerregistry — which ko uses to upload — treats that as fatal. Packages
-created by `GITHUB_TOKEN` inherit the repository's visibility, so a private
-repository produces a private package that the default token can only push while
-every layer happens to be cached. In that case set a `GHCR_TOKEN` secret (a PAT
-with `write:packages`); the workflow prefers it and falls back to `GITHUB_TOKEN`.
-
 Two flags matter and both are load-bearing:
 
-- `--sbom=none` — ko publishes SBOMs **by default**, and its upload path trips
-  over exactly that 403. `--sbom-dir` alone does not help: ko still uploads when
+- `--sbom=none` — ko publishes SBOMs **by default**, and its SBOM upload path
+  is unreliable on ghcr. `--sbom-dir` alone does not help: ko still uploads when
   `--push` is on. Generate SBOMs locally with `--sbom-dir sbom --push=false`.
 - `--bare` plus a **bare** `--tags` value — otherwise ko names the repository
   `<package>-<import-path-hash>`, or rejects a full `image:tag` with
