@@ -98,19 +98,16 @@ jobs:
             --platform=linux/amd64,linux/arm64 \
             --tags="${TAG}" \
             .
-          # --image-refs lists EVERY published reference: the multi-arch index
-          # (which carries the tag) followed by one untagged manifest per
-          # platform. Reading the whole file produces a multi-line value and
-          # GitHub rejects it as 'Invalid format ...' when writing to
-          # GITHUB_OUTPUT, so select the index line explicitly and assert we
-          # got exactly one.
-          image=$(grep -m1 ":${TAG}@" image-refs.txt)
-          lines=$(wc -l < image-refs.txt)
-          echo "image-refs.txt has $lines references; signing ${image}"
-          if [ -z "$image" ]; then
-            echo "::error::no index reference for tag ${TAG} in image-refs.txt"
-            exit 1
-          fi
+          # --image-refs writes one line PER published reference, and every line
+          # is UNTAGGED: the multi-arch index digest first, then one manifest
+          # digest per platform. Only ko's stdout carries the tag. So take the
+          # first line (the index) and re-attach the tag ourselves -- and do not
+          # filter on ":${TAG}@", which matches nothing and, under the runner's
+          # `bash -e`, kills the step with no error message at all.
+          digest=$(head -1 image-refs.txt)
+          image="${KO_DOCKER_REPO}@${digest##*@}"
+          echo "image-refs.txt has $(wc -l < image-refs.txt) references (index + platforms)"
+          echo "signing $image"
           echo "image=$image" >> "$GITHUB_OUTPUT"
 
       # Sign the digest ko printed, rather than reconstructing a tag: the output
