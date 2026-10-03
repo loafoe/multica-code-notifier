@@ -1,0 +1,119 @@
+# multica-code-notifier, deployed alongside multica in the `multica` namespace.
+#
+# It needs no Service, no Ingress and no Kubernetes API access at all: it holds
+# one Postgres connection open (LISTEN) and makes outbound HTTPS calls to the
+# Telegram Bot API. Hence automountServiceAccountToken: false -- if this pod is
+# ever compromised there is no token mounted for it to escalate with.
+#
+# replicas MUST stay 1. LISTEN/NOTIFY delivers every notification to every
+# listening session, so a second replica would deliver a second copy of the same
+# login code to the same Telegram chat. Scaling out needs a dedup step
+# (advisory lock keyed on the verification_code row id) that has not been
+# written; do not "just bump the replicas".
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: multica-code-notifier
+  namespace: multica
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multica-code-notifier
+  namespace: multica
+  labels:
+    app.kubernetes.io/name: multica-code-notifier
+    app.kubernetes.io/part-of: multica
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: multica-code-notifier
+  strategy:
+    # Recreate, not RollingUpdate. A rolling update briefly runs two replicas,
+    # and with LISTEN that means every login code is delivered to Telegram
+    # twice. Exactly the duplication the replicas:1 comment above warns about.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: multica-code-notifier
+        app.kubernetes.io/part-of: multica
+    spec:
+      serviceAccountName: multica-code-notifier
+      automountServiceAccountToken: false
+      # The program returns on the first SIGTERM; it never waits out a long
+      # shutdown.
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: ghcr
+      containers:
+        - name: notifier
+          # Digest-pinned; see .github/workflows/release.yaml, which publishes
+          # and cosign-signs this tag.
+          image: ghcr.io/loafoe/multica-code-notifier:v0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            # --- Postgres: the multica database, via CNPG's read-write Service
+            - name: PGHOST
+              value: multica-db-rw.multica.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: multica
+            - name: PGUSER
+              value: multica
+            # CNPG owns and rotates this password and reconciles the role to
+            # it, so read it live from multica-db-app rather than keeping a
+            # second copy anywhere. Same reasoning as the multica Helm
+            # release's post-rendered DATABASE_URL.
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: multica-db-app
+                  key: password
+            # CNPG serves TLS with a self-signed cert and this never leaves the
+            # cluster network, so verifying it would need a CA bundle for no
+            # benefit.
+            - name: PGSSLMODE
+              value: disable
+            # --- Telegram
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telegram
+                  key: bot_token
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram
+                  key: chat_id
+            # Empty = notify for every address. Set this to a comma-separated
+            # list once anyone besides the owner has an account, so other
+            # people's login codes do not land in this Telegram chat.
+            - name: NOTIFY_EMAIL_ALLOWLIST
+              value: ""
+          # No probes: the process has no HTTP surface, and its one dependency
+          # (Telegram) is already verified at startup -- an unreachable bot API
+          # makes it exit non-zero and CrashLoopBackOff rather than run
+          # silently broken. A liveness probe on a process that reconnects on
+          # its own would only add restart churn.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
