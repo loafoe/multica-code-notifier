@@ -30,6 +30,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # REQUIRED for ko: with the default fetch-depth: 1 the git tag is not
+          # present, so ko falls back to its git-state-derived tag
+          # (multica-code-notifier-<sha>) and --tags then conflicts with it.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
