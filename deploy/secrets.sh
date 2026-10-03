@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
-# Create/refresh the two Secrets multica-code-notifier needs. Neither is
-# committed: one is a registry credential, the other is the Telegram bot token.
-# Both steps are idempotent -- re-running rotates them in place.
+# Create/refresh the Secret multica-code-notifier needs. It is not committed:
+# it holds the Telegram bot token. Re-running rotates it in place.
 #
 #   ./deploy/secrets.sh
 set -euo pipefail
@@ -10,19 +9,21 @@ set -euo pipefail
 NAMESPACE="${NAMESPACE:-multica}"
 CONTEXT="${CONTEXT:-$(kubectl config current-context)}"
 
-# --- 1. Registry pull secret ----------------------------------------------
-# The image lives under a private namespace on ghcr.io, and clusters commonly
-# have no default registry credential: nodes only hold images cached at build
-# time, so a cold node cannot pull it and the pod lands in ErrImagePull even
-# though the repository exists.
-echo "==> registry pull secret (from gh auth token)"
-kubectl --context "$CONTEXT" -n "$NAMESPACE" create secret docker-registry ghcr \
-  --docker-server="${REGISTRY:-ghcr.io}" \
-  --docker-username="${REGISTRY_USERNAME:-$(gh api user --jq .login)}" \
-  --docker-password="$(gh auth token)" \
-  --dry-run=client -o yaml | kubectl --context "$CONTEXT" apply -f -
+# NOTE: no registry pull secret is created. The image is published to a PUBLIC
+# ghcr.io package, so the kubelet pulls it anonymously. Note that testing this by
+# curling /v2/<repo>/manifests/<tag> directly returns 401 whatever the package
+# visibility -- that is the pre-auth WWW-Authenticate challenge every registry
+# returns. To check visibility properly, exchange an anonymous token first:
+#
+#   t=$(curl -s "https://ghcr.io/token?service=ghcr.io&scope=repository:<owner>/<repo>:pull" | jq -r .token)
+#   curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $t" \
+#     -H "Accept: application/vnd.oci.image.index.v1+json" \
+#     "https://ghcr.io/v2/<owner>/<repo>/manifests/<tag>"     # 200 = public
 
-# --- 2. Telegram credentials ----------------------------------------------
+# The image itself needs no credentials: it is pulled anonymously from a public
+# package.
+#
+# --- Telegram credentials ----------------------------------------------
 # Defaults to reading an existing bot token + chat id out of a Secret in the
 # cluster, so a fleet shares one bot rather than accumulating near-duplicate
 # copies that drift apart when the token is rotated.
