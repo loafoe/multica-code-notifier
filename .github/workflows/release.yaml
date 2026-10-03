@@ -38,11 +38,13 @@ jobs:
 
       - uses: sigstore/cosign-installer@v3
 
-      - uses: imranismail/setup-ko@master
-        with:
-          # Pin the ko major so a new default base image does not silently
-          # change what ships in the released image.
-          version: latest
+      # ko is installed from its own release script rather than a setup action:
+      # the community setup-ko actions have moved/been deleted before, and this
+      # keeps the toolchain auditable to ko.build alone.
+      - name: Install ko
+        run: |
+          curl -fsSL https://ko.build/install.sh | sh -s -- -b "$HOME/bin" latest
+          ko version
 
       - uses: docker/setup-buildx-action@v3
 
