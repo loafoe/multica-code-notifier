@@ -1,7 +1,7 @@
 name: release
 
 # ko cross-compiles a static binary for linux/amd64 + linux/arm64, emits an SPDX
-# SBOM, pushes a multi-arch index to ghcr.io/loafoe, and cosign signs the index
+# SBOM, pushes a multi-arch index to ghcr.io, and cosign signs the index
 # digest keylessly using this workflow's GitHub OIDC token -- there is no
 # long-lived signing key anywhere, and no ~/.cosign on any machine.
 #
@@ -20,9 +20,9 @@ permissions:
 env:
   REGISTRY: ghcr.io
   # ko resolves the image name as KO_DOCKER_REPO + the Go import path, so this
-  # must be the bare registry. With KO_DOCKER_REPO=ghcr.io/loafoe AND
-  # github.repository=loafoe/multica-code-notifier you get the double-prefixed
-  # ghcr.io/loafoe/loafoe/multica-code-notifier.
+  # must be the bare registry. With KO_DOCKER_REPO=ghcr.io/<org> AND
+  # github.repository=<org>/<repo> you get the double-prefixed
+  # ghcr.io/<org>/<org>/multica-code-notifier.
   KO_DOCKER_REPO: ghcr.io
 
 jobs:

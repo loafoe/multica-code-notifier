@@ -138,23 +138,28 @@ func run(log *slog.Logger, showConfig, setupOnly bool, sendTest, listenTable, ch
 	}
 
 	// The reconnect loop is the whole program: LISTEN is bound to one
-	// connection, and on the cluster the multica-database Cluster is a CNPG instance
-	// that can be restarted or switched over at any time (see the project documentation).
-	// Everything below returns on connection loss and is retried with backoff.
+	// connection, and the database behind multica can be restarted, rescheduled
+	// or failed over at any time. Everything below returns on connection loss
+	// and is retried with backoff.
 	return notifier.watch(ctx)
 }
 
 // loadConfig builds the configuration from the environment, applying defaults
-// that match the the cluster deployment so the program also works with a bare
-// `go run` plus a tunnel. Credentials come from Kubernetes Secrets via env.
+// so the program runs unmodified against a typical in-cluster Postgres while
+// still being configurable for local development. Credentials arrive as env
+// vars, normally wired from Kubernetes Secrets.
 func loadConfig(table, channel string) (*config, error) {
 	cfg := &config{
-		pgHost:     env("PGHOST", "multica-db-rw.multica.svc.cluster.local"),
+		// Defaults for a Postgres running inside the cluster. Override for a
+		// managed database, a sidecar, or a local tunnel.
+		pgHost:     env("PGHOST", "postgres"),
 		pgPort:     env("PGPORT", "5432"),
 		pgDatabase: env("PGDATABASE", "multica"),
 		pgUser:     env("PGUSER", "multica"),
 		pgPassword: os.Getenv("PGPASSWORD"),
-		pgSSLMode:  env("PGSSLMODE", "disable"),
+		// The database is normally reached over a private network without a
+		// verifiable certificate, so certificate verification is opt-in.
+		pgSSLMode: env("PGSSLMODE", "disable"),
 
 		tableSchema: env("PG_SCHEMA", "public"),
 		table:       table,

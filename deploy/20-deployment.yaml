@@ -62,7 +62,9 @@ spec:
           image: ghcr.io/loafoe/multica-code-notifier:v0.1.0
           imagePullPolicy: IfNotPresent
           env:
-            # --- Postgres: the multica database, via CNPG's read-write Service
+            # --- Postgres. The default below is the CloudNativePG read-write
+            # Service for a Cluster named multica-db in this namespace; for
+            # plain Postgres or a managed database, point PGHOST at it.
             - name: PGHOST
               value: multica-db-rw.multica.svc.cluster.local
             - name: PGPORT
@@ -71,18 +73,18 @@ spec:
               value: multica
             - name: PGUSER
               value: multica
-            # CNPG owns and rotates this password and reconciles the role to
-            # it, so read it live from multica-db-app rather than keeping a
-            # second copy anywhere. Same reasoning as the multica Helm
-            # release's post-rendered DATABASE_URL.
+            # Read live from the Secret the database operator owns rather than
+            # keeping a second copy anywhere, so a password rotation does not
+            # leave this pod holding a stale credential.
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   name: multica-db-app
                   key: password
-            # CNPG serves TLS with a self-signed cert and this never leaves the
-            # cluster network, so verifying it would need a CA bundle for no
-            # benefit.
+            # The connection never leaves the cluster network and the operator
+            # serves a self-signed certificate, so verification would need a CA
+            # bundle for no benefit. Set to "require" (plus a CA) for a
+            # managed database reached over a public network.
             - name: PGSSLMODE
               value: disable
             # --- Telegram
@@ -97,8 +99,8 @@ spec:
                   name: telegram
                   key: chat_id
             # Empty = notify for every address. Set this to a comma-separated
-            # list once anyone besides the owner has an account, so other
-            # people's login codes do not land in this Telegram chat.
+            # list as soon as anyone besides the account owner exists, so other
+            # users' login codes do not land in this Telegram chat.
             - name: NOTIFY_EMAIL_ALLOWLIST
               value: ""
           # No probes: the process has no HTTP surface, and its one dependency
