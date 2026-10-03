@@ -71,7 +71,17 @@ jobs:
           # --tags takes a BARE TAG; passing a full image reference makes ko
           # prepend its own computed tag and fail with
           # 'repository can only contain the characters ...'
-          echo "image=$(KO_DOCKER_REPO=ghcr.io/${{ github.repository }} ko build --bare --platform=linux/amd64,linux/arm64 --tags=${TAG} .)" >> "$GITHUB_OUTPUT"
+          # --image-refs, not $(ko build ...): ko writes the published digest to
+          # STDERR, so command substitution captures nothing and cosign is
+          # then invoked with zero arguments. Writing the refs to a file is
+          # explicit and version-independent.
+          KO_DOCKER_REPO=ghcr.io/${{ github.repository }} ko build \
+            --bare \
+            --image-refs image-refs.txt \
+            --platform=linux/amd64,linux/arm64 \
+            --tags="${TAG}" \
+            .
+          echo "image=$(cat image-refs.txt)" >> "$GITHUB_OUTPUT"
 
       # Sign the digest ko printed, rather than reconstructing a tag: the output
       # is the exact multi-arch index digest that consumers pull.
