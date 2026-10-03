@@ -71,8 +71,20 @@ jobs:
         id: version
         env:
           REPO_PATH: ${{ github.repository }}
+          GH_USER: ${{ github.actor }}
+          # ghcr.io does NOT accept a PAT as a bare registry bearer for writes.
+          # Credentials must be exchanged at the token endpoint with HTTP Basic
+          # auth for a `pull,push` scope; using the PAT directly fails with a
+          # bare 403 on the manifest PUT.
+          GH_PASSWORD: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          registry_token() {
+            curl -fsSL -u "${GH_USER}:${GH_PASSWORD}" \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_PATH}:${1}" \
+              | jq -r .token
+          }
 
           # Strict semver, with an optional leading `v`:
           #   MAJOR.MINOR.PATCH  [-prerelease]  [+build]
@@ -107,14 +119,14 @@ jobs:
           echo "is_release=$IS_RELEASE"      >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
 
-          # Released versions are immutable. Fetch an anonymous pull token for
-          # the check -- a 401 here means "not published", which is the answer
-          # we want, and it keeps this step independent of the login token.
+          # Released versions are immutable. The probe uses an authenticated
+          # token on purpose: an anonymous one returns 401 for a private package
+          # whether or not the tag exists, which would make this guard silently
+          # useless exactly when it matters most.
           if [ "$IS_RELEASE" = "true" ]; then
-            probe=$(curl -fsSL "https://ghcr.io/token?scope=repository:${REPO_PATH}:pull&service=ghcr.io" \
-              | jq -r .token || true)
+            probe=$(registry_token pull)
             code=$(curl -s -o /dev/null -w '%{http_code}' \
-              -H "Authorization: Bearer ${probe:-none}" \
+              -H "Authorization: Bearer $probe" \
               -H 'Accept: application/vnd.oci.image.index.v1+json' \
               "https://ghcr.io/v2/${REPO_PATH}/manifests/${TAG}")
             if [ "$code" = "200" ]; then
@@ -175,14 +187,19 @@ jobs:
           IMAGE: ${{ steps.ko_build.outputs.image }}
           TAG: ${{ steps.version.outputs.tag }}
           REPO_PATH: ${{ github.repository }}
-          # The registry's anonymous token endpoint only ever grants `pull`, so
-          # moving a tag requires the login token used by docker/login-action.
-          # Fetching a token anonymously here fails with a bare 403.
-          GH_TOKEN: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+          # Two non-obvious rules, both learned the hard way:
+          #  * the anonymous token endpoint only ever grants `pull`;
+          #  * a PAT is not accepted as a bare registry bearer for a manifest
+          #    PUT (403). Credentials have to be exchanged at the token endpoint
+          #    with HTTP Basic auth for a `pull,push` scope.
+          GH_USER: ${{ github.actor }}
+          GH_PASSWORD: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           accept='application/vnd.oci.image.index.v1+json'
-          token="$GH_TOKEN"
+          token=$(curl -fsSL -u "${GH_USER}:${GH_PASSWORD}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_PATH}:pull,push" \
+            | jq -r .token)
           digest="${IMAGE##*@}"
           manifest=$(curl -fsSL \
             -H "Authorization: Bearer $token" -H "Accept: $accept" \
