@@ -52,6 +52,10 @@ kubectl logs -n multica deploy/multica-code-notifier -f
 # msg="code delivered" email=...
 ```
 
+## Licence
+
+Apache 2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
 ## Build
 
 [ko](https://ko.build), not a Dockerfile: it cross-compiles a static binary and
@@ -74,6 +78,30 @@ cosign verify \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   ghcr.io/<owner>/multica-code-notifier:v0.1.0
 ```
+
+### Registry credentials
+
+The workflow prefers a `GHCR_TOKEN` secret (a PAT with `write:packages`) and
+falls back to `secrets.GITHUB_TOKEN`. The fallback is enough only when the
+package is **public**: ghcr.io answers a blob `HEAD` with `403` rather than `404`
+for a blob that does not exist in a private package — deliberately, so it does
+not leak which blobs exist — and go-containerregistry, which ko uses to upload,
+treats that as fatal. Packages created by `GITHUB_TOKEN` inherit the
+repository's visibility, so in a **private** repository the default token can
+only push while every layer happens to be cached.
+
+Two flags matter and both are load-bearing:
+
+- `--sbom=none` — ko publishes SBOMs **by default**, and its upload path trips
+  over exactly that 403. `--sbom-dir` alone does not help: ko still uploads when
+  `--push` is on. Generate SBOMs locally with `--sbom-dir sbom --push=false`.
+- `--bare` plus a **bare** `--tags` value — otherwise ko names the repository
+  `<package>-<import-path-hash>`, or rejects a full `image:tag` with
+  "repository can only contain the characters …".
+
+The digest is read from `--image-refs`, whose lines are all **untagged** (the
+multi-arch index first, then one line per platform) — only ko's stdout carries
+the tag.
 
 ## Configuration
 

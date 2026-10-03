@@ -57,9 +57,14 @@ spec:
         - name: ghcr
       containers:
         - name: notifier
-          # Digest-pinned; see .github/workflows/release.yaml, which publishes
-          # and cosign-signs this tag.
-          image: ghcr.io/loafoe/multica-code-notifier:v0.1.0
+          # Digest-pinned. The release workflow runs on every push to main, so
+          # the :v0.1.0 tag is MUTABLE; pinning the digest keeps a redeploy from
+          # silently changing what runs. Verify before trusting a new one:
+          #   cosign verify \
+          #     --certificate-identity-regexp '^https://github.com/<owner>/multica-code-notifier/' \
+          #     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+          #     ghcr.io/<owner>/multica-code-notifier@sha256:02235de17d4e470847b9b501b6951458c604283ce6f7b0e8d032e60bf98f4aaf
+          image: ghcr.io/loafoe/multica-code-notifier@sha256:02235de17d4e470847b9b501b6951458c604283ce6f7b0e8d032e60bf98f4aaf
           imagePullPolicy: IfNotPresent
           env:
             # --- Postgres. The default below is the CloudNativePG read-write
