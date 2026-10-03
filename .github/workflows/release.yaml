@@ -1,0 +1,104 @@
+name: release
+
+# ko cross-compiles a static binary for linux/amd64 + linux/arm64, emits an SPDX
+# SBOM, pushes a multi-arch index to ghcr.io/loafoe, and cosign signs the index
+# digest keylessly using this workflow's GitHub OIDC token -- there is no
+# long-lived signing key anywhere, and no ~/.cosign on any machine.
+#
+# Trigger by pushing a tag; the tag becomes the image tag.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+  # Required for cosign keyless: mints the OIDC token that becomes the
+  # Fulcio certificate's identity claim.
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  KO_DOCKER_REPO: ghcr.io/loafoe
+
+jobs:
+  build-sign-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: sigstore/cosign-installer@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Make the tag available to ko as the image tag. ko derives the repository
+      # from KO_DOCKER_REPO + the Go import path, and the tag from the git tag.
+      - name: Resolve image tag
+        id: meta
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (multi-arch, with SBOM)
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          IMAGE: ${{ env.KO_DOCKER_REPO }}/${{ github.repository }}
+        run: |
+          ko build \
+            --sbom \
+            --bare \
+            --platform=linux/arm64,linux/amd64 \
+            --tags "$IMAGE:$TAG" \
+            .
+
+      # Sign the index, not the per-platform manifests: a consumer verifies the
+      # digest it pulls, and signing only the arch-specific manifests would
+      # leave the multi-arch index itself unsigned.
+      - name: Sign (keyless)
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          IMAGE: ${{ env.KO_DOCKER_REPO }}/${{ github.repository }}
+        run: cosign sign --yes "$IMAGE:$TAG"
+
+      # Proves the signature is actually there and carries the workflow
+      # identity, rather than trusting that the sign step succeeded.
+      - name: Verify signature
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          IMAGE: ${{ env.KO_DOCKER_REPO }}/${{ github.repository }}
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$IMAGE:$TAG" | tee cosign-output.txt
+          # Surface the digest + signature in the job summary so it is visible
+          # without re-running cosign locally.
+          {
+            echo "### cosign"
+            echo '```'
+            cat cosign-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify
+        if: success()
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          IMAGE: ${{ env.KO_DOCKER_REPO }}/${{ github.repository }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg t "$IMAGE:$TAG" \
+                 '{text: "multica-code-notifier published and signed: " + $t}')" \
+            "$SLACK_WEBHOOK_URL"
