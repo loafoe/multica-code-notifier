@@ -57,18 +57,17 @@ Apache 2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
 ## Build
 
-[ko](https://ko.build), not a Dockerfile: it cross-compiles a static binary and
-publishes a multi-arch index (`linux/amd64` and `linux/arm64`) with an SPDX
-SBOM in a single step.
+[ko](https://ko.build) cross-compiles a static binary and publishes a multi-arch
+index (`linux/amd64` and `linux/arm64`) to ghcr.io. There is no Dockerfile.
 
 ```bash
 KO_DOCKER_REPO=ghcr.io/<owner>/multica-code-notifier \
-  ko build --sbom-dir sbom --bare --platform=linux/arm64,linux/amd64 --tags v0.1.3 .
+  ko build --sbom=none --bare --platform=linux/amd64,linux/arm64 --tags v0.1.3 .
 ```
 
 Releases go through `.github/workflows/release.yaml`, which **cosign-signs
-keylessly** via GitHub OIDC — no signing key exists on any machine or in the
-repository — and verifies its own signature before reporting success.
+keylessly** via GitHub OIDC and verifies its own signature before reporting
+success.
 
 ### Tags
 
@@ -78,14 +77,9 @@ repository — and verifies its own signature before reporting success.
 | push `v0.2.0-rc.1` | `v0.2.0-rc.1` | untouched |
 | push to `main` | `main` | untouched |
 
-- Tags are validated as strict semver (`vMAJOR.MINOR.PATCH[-prerelease][+build]`,
-  no leading zeros). `v1.2` and `latest` are rejected outright.
-- **A published version is immutable.** Re-pushing an existing version fails the
-  build: `git tag --force` makes accidental republishing trivial, and consumers
-  pin tags. Fix forward with a new version instead.
-- `main` is a development build and never masquerades as a version. `latest`
-  tracks the newest **stable** release only, so it is not the moving target it
-  would be if every commit updated it.
+Tags are strict semver (`vMAJOR.MINOR.PATCH[-prerelease][+build]`, no leading
+zeros); `v1.2` and `latest` are rejected. A published version tag is immutable,
+and `latest` tracks the newest stable release only.
 
 ```bash
 cosign verify \
@@ -94,35 +88,10 @@ cosign verify \
   ghcr.io/<owner>/multica-code-notifier:v0.1.3
 ```
 
-### The image is public — no credentials needed anywhere
+### The image is public
 
-The package is published **public**, so the kubelet pulls the image anonymously
-and the Deployment needs no `imagePullSecrets`.
-
-Check this properly, because the obvious test lies: requesting
-`/v2/<repo>/manifests/<tag>` directly returns **401 whatever the visibility** —
-that is the pre-auth `WWW-Authenticate` challenge every registry returns, and it
-looks identical to "private". Exchange an anonymous token first:
-
-```bash
-t=$(curl -s "https://ghcr.io/token?service=ghcr.io&scope=repository:<owner>/<repo>:pull" | jq -r .token)
-curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $t" \
-  -H "Accept: application/vnd.oci.image.index.v1+json" \
-  "https://ghcr.io/v2/<owner>/<repo>/manifests/<tag>"      # 200 = public
-```
-
-Two flags matter and both are load-bearing:
-
-- `--sbom=none` — ko publishes SBOMs **by default**, and its SBOM upload path
-  is unreliable on ghcr. `--sbom-dir` alone does not help: ko still uploads when
-  `--push` is on. Generate SBOMs locally with `--sbom-dir sbom --push=false`.
-- `--bare` plus a **bare** `--tags` value — otherwise ko names the repository
-  `<package>-<import-path-hash>`, or rejects a full `image:tag` with
-  "repository can only contain the characters …".
-
-The digest is read from `--image-refs`, whose lines are all **untagged** (the
-multi-arch index first, then one line per platform) — only ko's stdout carries
-the tag.
+The package is published **public**, so the kubelet pulls it anonymously and the
+Deployment needs no `imagePullSecrets`.
 
 ## Configuration
 
