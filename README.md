@@ -27,13 +27,17 @@ Runs as a single Deployment next to multica. It needs no Service, no Ingress
 and no Kubernetes API access.
 
 ```bash
+cp deploy/10-configmap.example.yaml deploy/10-configmap.yaml
+# edit deploy/10-configmap.yaml: replace the example address/chat id
 kubectl apply -f deploy/10-configmap.yaml  # email -> chat id routing
 ./deploy/secrets.sh                        # Telegram bot token only
 kubectl apply -f deploy/20-deployment.yaml
 ```
 
-`deploy/10-configmap.yaml` is the source of truth for routing; edit it before a
-fresh install. `deploy/secrets.sh` needs a Telegram bot token from one of:
+`deploy/10-configmap.example.yaml` is only a template. The filled-in
+`deploy/10-configmap.yaml` is gitignored on purpose: real addresses and chat ids
+are deployment-specific and should not be published. `deploy/secrets.sh` needs a
+Telegram bot token from one of:
 
 | Source | How |
 |---|---|
@@ -134,6 +138,10 @@ address that should reach several people:
 * A `TELEGRAM_CHAT_MAP` env var overrides the file, mainly for local runs.
 * If neither the env var nor the file is present the process exits at startup
   rather than running with no recipients.
+
+Keep real values out of git: copy `deploy/10-configmap.example.yaml` to the
+gitignored `deploy/10-configmap.yaml` and edit that. Applying the example file
+as-is points codes at a dummy chat.
 
 After editing:
 

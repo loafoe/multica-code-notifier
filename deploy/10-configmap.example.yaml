@@ -1,3 +1,7 @@
+# EXAMPLE routing map -- copy to deploy/10-configmap.yaml, replace the entry
+# below with a real address/chat id, then apply. The filled-in file is
+# gitignored so real addresses and chat ids never end up in this public repo.
+#
 # Routing for multica-code-notifier: which Telegram chat(s) receive the login
 # code for a given Multica address.
 #

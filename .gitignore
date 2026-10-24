@@ -1,3 +1,8 @@
 /multica-code-notifier
 /dist/
 image-refs.txt
+
+# Deployment-specific routing map. Start from
+# deploy/10-configmap.example.yaml, fill in real emails/chat ids, and apply it;
+# never commit the filled-in copy to this public repository.
+/deploy/10-configmap.yaml
