@@ -1,0 +1,29 @@
+# Routing for multica-code-notifier: which Telegram chat(s) receive the login
+# code for a given Multica address.
+#
+# This is config, not credentials, so it lives in a ConfigMap: adding a team
+# member is a normal `kubectl edit`/`kubectl apply` plus a pod restart, with no
+# secret handling. The bot token stays in Secret/telegram -- a chat id on its own
+# cannot send anything.
+#
+# Format: one entry per address, mapping to a chat id or a list of chat ids.
+#
+#   "you@example.com": "123456789"
+#   "shared@example.com":    ["111111", "222222"]
+#
+# Addresses are matched case-insensitively. An address with no entry is
+# SKIPPED: its code goes nowhere rather than to whoever happens to be first in
+# the map, which is the failure mode the old single-chat setup had.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: multica-code-notifier
+  namespace: multica
+  labels:
+    app.kubernetes.io/name: multica-code-notifier
+    app.kubernetes.io/part-of: multica
+data:
+  chat-map.json: |
+    {
+      "you@example.com": "123456789"
+    }

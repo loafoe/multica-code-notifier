@@ -214,19 +214,27 @@ func (n *notifier) handle(ctx context.Context, payload string) {
 		n.log.Error("undecodable notification payload", "err", err, "payload", payload)
 		return
 	}
-	if !n.cfg.allowed(p.Email) {
-		n.log.Info("skipping address not on the allowlist", "email", p.Email)
+	chats := n.cfg.chatsFor(p.Email)
+	if len(chats) == 0 {
+		n.log.Info("no telegram chat mapped for address, skipping", "email", p.Email)
 		return
 	}
 
 	n.log.Info("new verification code", "email", p.Email, "expires_at", p.ExpiresAt)
 
+	message := formatMessage(p)
+
 	// Notification delivery is synchronous and at-most-once: if Telegram is
 	// down the code is lost. Acceptable, because the row is still in the table
 	// and Multica's login page will happily mint another one on request.
-	if err := n.tg.sendMessage(ctx, formatMessage(p)); err != nil {
-		n.log.Error("telegram delivery failed", "err", err, "email", p.Email)
-		return
+	//
+	// One address may map to several chats; a failure for one recipient must
+	// not stop the others from getting the code.
+	for _, chatID := range chats {
+		if err := n.tg.sendMessage(ctx, chatID, message); err != nil {
+			n.log.Error("telegram delivery failed", "err", err, "email", p.Email, "chat_id", chatID)
+			continue
+		}
+		n.log.Info("code delivered", "email", p.Email, "chat_id", chatID)
 	}
-	n.log.Info("code delivered", "email", p.Email)
 }

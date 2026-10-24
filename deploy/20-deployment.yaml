@@ -7,7 +7,7 @@
 #
 # replicas MUST stay 1. LISTEN/NOTIFY delivers every notification to every
 # listening session, so a second replica would deliver a second copy of the same
-# login code to the same Telegram chat. Scaling out needs a dedup step
+# login code to each mapped Telegram chat. Scaling out needs a dedup step
 # (advisory lock keyed on the verification_code row id) that has not been
 # written; do not "just bump the replicas".
 apiVersion: v1
@@ -55,9 +55,10 @@ spec:
           type: RuntimeDefault
       containers:
         - name: notifier
-          # Digest-pinned. The release workflow runs on every push to main, so
-          # the :v0.1.0 tag is MUTABLE; pinning the digest keeps a redeploy from
-          # silently changing what runs. Verify before trusting a new one:
+          # Digest-pinned. The release workflow publishes a MUTABLE :main tag on
+          # every push, and version tags are immutable, so pinning a release
+          # digest keeps a redeploy from silently changing what runs. Verify
+          # before trusting a new one:
           #   cosign verify \
           #     --certificate-identity-regexp '^https://github.com/<owner>/multica-code-notifier/' \
           #     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
@@ -91,21 +92,19 @@ spec:
             - name: PGSSLMODE
               value: disable
             # --- Telegram
+            # The bot token is the only credential. The email -> chat id routing
+            # map is ConfigMap/multica-code-notifier, mounted below.
             - name: TELEGRAM_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: telegram
                   key: bot_token
-            - name: TELEGRAM_CHAT_ID
-              valueFrom:
-                secretKeyRef:
-                  name: telegram
-                  key: chat_id
-            # Empty = notify for every address. Set this to a comma-separated
-            # list as soon as anyone besides the account owner exists, so other
-            # users' login codes do not land in this Telegram chat.
-            - name: NOTIFY_EMAIL_ALLOWLIST
-              value: ""
+            - name: TELEGRAM_CHAT_MAP_FILE
+              value: /etc/multica-code-notifier/chat-map.json
+          volumeMounts:
+            - name: chat-map
+              mountPath: /etc/multica-code-notifier
+              readOnly: true
           # No probes: the process has no HTTP surface, and its one dependency
           # (Telegram) is already verified at startup -- an unreachable bot API
           # makes it exit non-zero and CrashLoopBackOff rather than run
@@ -122,3 +121,8 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+      volumes:
+        - name: chat-map
+          configMap:
+            name: multica-code-notifier
+            optional: false

@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 #
-# Create/refresh the Secret multica-code-notifier needs. It is not committed:
-# it holds the Telegram bot token. Re-running rotates it in place.
+# Create/refresh the Secret holding the Telegram BOT TOKEN. It is not
+# committed, because a bot token is a credential. The email -> chat id routing
+# map is NOT here: it lives in the ConfigMap applied by
+# `kubectl apply -f deploy/10-configmap.yaml`.
 #
 #   ./deploy/secrets.sh
+#
+# Chat ids are not secrets: without the bot token they cannot be used to send
+# anything. Keeping them in a ConfigMap means a new team member is a normal
+# config edit, not a Secret rotation.
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-multica}"
@@ -20,17 +26,7 @@ CONTEXT="${CONTEXT:-$(kubectl config current-context)}"
 #     -H "Accept: application/vnd.oci.image.index.v1+json" \
 #     "https://ghcr.io/v2/<owner>/<repo>/manifests/<tag>"     # 200 = public
 
-# The image itself needs no credentials: it is pulled anonymously from a public
-# package.
-#
-# --- Telegram credentials ----------------------------------------------
-# Defaults to reading an existing bot token + chat id out of a Secret in the
-# cluster, so a fleet shares one bot rather than accumulating near-duplicate
-# copies that drift apart when the token is rotated.
-#
-# Set TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID to use values from somewhere else
-# (a password manager, a sealed-secret store, your own bot) instead.
-echo "==> Telegram credentials"
+echo "==> Telegram bot token"
 SOURCE_NS="${TELEGRAM_SOURCE_NAMESPACE:-}"
 SOURCE_SECRET="${TELEGRAM_SOURCE_SECRET:-telegram}"
 
@@ -42,19 +38,10 @@ if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
   TELEGRAM_BOT_TOKEN=$(kubectl --context "$CONTEXT" -n "$SOURCE_NS" \
     get secret "$SOURCE_SECRET" -o jsonpath='{.data.bot_token}' | base64 -d)
 fi
-if [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
-  if [ -z "$SOURCE_NS" ]; then
-    echo "error: set TELEGRAM_CHAT_ID, or TELEGRAM_SOURCE_NAMESPACE to copy from an existing Secret" >&2
-    exit 1
-  fi
-  TELEGRAM_CHAT_ID=$(kubectl --context "$CONTEXT" -n "$SOURCE_NS" \
-    get secret "$SOURCE_SECRET" -o jsonpath='{.data.chat_id}' | base64 -d)
-fi
 
 kubectl --context "$CONTEXT" -n "$NAMESPACE" create secret generic telegram \
   --from-literal=bot_token="$TELEGRAM_BOT_TOKEN" \
-  --from-literal=chat_id="$TELEGRAM_CHAT_ID" \
   --dry-run=client -o yaml | kubectl --context "$CONTEXT" apply -f -
 
-unset TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
+unset TELEGRAM_BOT_TOKEN
 echo "done"

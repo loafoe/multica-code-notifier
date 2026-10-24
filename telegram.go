@@ -18,7 +18,6 @@ import (
 // holding a LISTEN open is not worth the supply chain.
 type telegramClient struct {
 	token   string
-	chatID  string
 	baseURL string
 	client  *http.Client
 
@@ -53,13 +52,13 @@ func (e *telegramError) Error() string {
 	return fmt.Sprintf("telegram http %d: %s", e.StatusCode, e.Description)
 }
 
-func (c *telegramClient) sendMessage(ctx context.Context, text string) error {
+func (c *telegramClient) sendMessage(ctx context.Context, chatID, text string) error {
 	if c.maxSendAttempts == 0 {
 		c.maxSendAttempts = 3
 	}
 
 	body, err := json.Marshal(sendMessageRequest{
-		ChatID:    c.chatID,
+		ChatID:    chatID,
 		Text:      text,
 		ParseMode: "HTML",
 	})
@@ -112,6 +111,54 @@ func (c *telegramClient) sendMessage(ctx context.Context, text string) error {
 		}
 	}
 	return fmt.Errorf("after %d attempts: %w", c.maxSendAttempts, lastErr)
+}
+
+// getMe verifies the bot token without messaging anybody. With a per-address
+// map there is no single "the" chat to send a startup greeting to, and pinging
+// a random teammate on every rollout would be noise.
+func (c *telegramClient) getMe(ctx context.Context) (string, error) {
+	url := fmt.Sprintf("%s/bot%s/getMe", c.baseURL, c.token)
+
+	reqCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build getMe request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("getMe: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	if err != nil {
+		return "", fmt.Errorf("read getMe response: %w", err)
+	}
+
+	var envelope struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
+			ID       int64  `json:"id"`
+			Username string `json:"username"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "", fmt.Errorf("decode getMe response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK || !envelope.OK {
+		desc := envelope.Description
+		if desc == "" {
+			desc = strings.TrimSpace(string(raw))
+		}
+		return "", fmt.Errorf("getMe: telegram http %d: %s", resp.StatusCode, desc)
+	}
+	if envelope.Result.Username != "" {
+		return "@" + envelope.Result.Username, nil
+	}
+	return fmt.Sprintf("%d", envelope.Result.ID), nil
 }
 
 func parseTelegramResponse(resp *http.Response) error {

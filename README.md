@@ -5,19 +5,21 @@ Relays [multica](https://github.com/multica-ai/multica) login codes to Telegram.
 Multica's self-hosted login emails a six-digit code. With no email provider
 configured, that code only exists in the multica backend's pod log — so every
 login needs a `kubectl logs`. This watches the `verification_code` table
-directly and messages the code to a Telegram chat instead.
+directly and messages the code to the right person's Telegram chat.
 
 ```
 POST /auth/send-code ──▶ multica backend ──▶ INSERT verification_code
                                                     │
                               AFTER INSERT trigger ──┴─▶ pg_notify('multica_verification_code', {email, code, expires_at})
                                                             │
-                                       LISTEN ──▶ multica-code-notifier ──▶ Bot API ──▶ you
+                                       LISTEN ──▶ multica-code-notifier ──▶ email → chat map ──▶ Bot API ──▶ the right person
 ```
 
 It talks to Postgres rather than the multica API on purpose: the code never has
 to be read out of a pod log, and nothing breaks when the multica Deployment is
-rescheduled.
+rescheduled. One bot serves a whole team: `deploy/10-configmap.yaml` maps each
+address to its own Telegram chat (or several), and an address that is not in the
+map is skipped.
 
 ## Deploy
 
@@ -25,18 +27,20 @@ Runs as a single Deployment next to multica. It needs no Service, no Ingress
 and no Kubernetes API access.
 
 ```bash
-./deploy/secrets.sh                       # Telegram credentials only
+kubectl apply -f deploy/10-configmap.yaml  # email -> chat id routing
+./deploy/secrets.sh                        # Telegram bot token only
 kubectl apply -f deploy/20-deployment.yaml
 ```
 
-`deploy/secrets.sh` needs Telegram credentials from one of:
+`deploy/secrets.sh` needs a Telegram bot token from one of:
 
 | Source | How |
 |---|---|
 | A Secret already in the cluster | `TELEGRAM_SOURCE_NAMESPACE=<ns> TELEGRAM_SOURCE_SECRET=<name> ./deploy/secrets.sh` |
-| Values you supply yourself | `TELEGRAM_BOT_TOKEN=<token> TELEGRAM_CHAT_ID=<id> ./deploy/secrets.sh` |
+| A value you supply yourself | `TELEGRAM_BOT_TOKEN=<token> ./deploy/secrets.sh` |
 
-Adjust `PGHOST` and the `multica-db-app` secret reference in
+Edit `deploy/10-configmap.yaml` (or the live ConfigMap) to map the team's
+addresses. Adjust `PGHOST` and the `multica-db-app` secret reference in
 `deploy/20-deployment.yaml` to match your database.
 
 Verify with a real end-to-end run — ask the login page for a code and watch it
@@ -62,7 +66,7 @@ index (`linux/amd64` and `linux/arm64`) to ghcr.io. There is no Dockerfile.
 
 ```bash
 KO_DOCKER_REPO=ghcr.io/<owner>/multica-code-notifier \
-  ko build --sbom=none --bare --platform=linux/amd64,linux/arm64 --tags v0.1.3 .
+  ko build --sbom=none --bare --platform=linux/amd64,linux/arm64 --tags v0.2.0 .
 ```
 
 Releases go through `.github/workflows/release.yaml`, which **cosign-signs
@@ -73,7 +77,7 @@ success.
 
 | Trigger | Publishes | `latest` |
 |---|---|---|
-| push `v0.1.3` | `v0.1.3` | moved, if the version is stable |
+| push `v0.2.0` | `v0.2.0` | moved, if the version is stable |
 | push `v0.2.0-rc.1` | `v0.2.0-rc.1` | untouched |
 | push to `main` | `main` | untouched |
 
@@ -85,13 +89,43 @@ and `latest` tracks the newest stable release only.
 cosign verify \
   --certificate-identity-regexp '^https://github.com/<owner>/multica-code-notifier/' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  ghcr.io/<owner>/multica-code-notifier:v0.1.3
+  ghcr.io/<owner>/multica-code-notifier:v0.2.0
 ```
 
 ### The image is public
 
 The package is published **public**, so the kubelet pulls it anonymously and the
 Deployment needs no `imagePullSecrets`.
+
+## Routing
+
+The ConfigMap is mounted at `/etc/multica-code-notifier/chat-map.json`. It maps
+a Multica email address to one Telegram chat id, or a list of them for an
+address that should reach several people:
+
+```json
+{
+  "you@example.com": "123456789",
+  "team@example.com": ["111111", "222222"]
+}
+```
+
+* Matching is case-insensitive; the map keys are normalised to lower case.
+* Numeric ids may be JSON strings or bare numbers; group ids are negative.
+* An address that is **not** in the map is skipped (logged, not delivered), so
+  another user's code can never fall through to a default chat.
+* A `TELEGRAM_CHAT_MAP` env var overrides the file, mainly for local runs.
+
+After editing:
+
+```bash
+kubectl apply -f deploy/10-configmap.yaml
+kubectl rollout restart -n multica deploy/multica-code-notifier
+```
+
+Chat ids are not credentials: without the bot token they cannot be used to send
+anything. That is why routing lives in a ConfigMap while the token stays in
+`Secret/telegram`.
 
 ## Configuration
 
@@ -102,23 +136,24 @@ Deployment needs no `imagePullSecrets`.
 | `PGPASSWORD` | *(required)* | wire from the Secret the database operator owns |
 | `PGSSLMODE` | `disable` | set `require` + a CA bundle for a managed database |
 | `PG_SCHEMA` | `public` | |
-| `TELEGRAM_BOT_TOKEN` | *(required)* | |
-| `TELEGRAM_CHAT_ID` | *(required)* | |
+| `TELEGRAM_BOT_TOKEN` | *(required)* | bot token; keep in a Secret |
+| `TELEGRAM_CHAT_MAP_FILE` | `/etc/multica-code-notifier/chat-map.json` | mounted ConfigMap with the email -> chat id map |
+| `TELEGRAM_CHAT_MAP` | *(empty)* | inline JSON override for the file (local dev) |
 | `TELEGRAM_API_URL` | `https://api.telegram.org` | override to point at a Bot API proxy |
-| `NOTIFY_EMAIL_ALLOWLIST` | *(empty = all)* | comma-separated; set once other accounts exist |
 
-Flags: `-show-config` (redacted), `-setup-only` (install the trigger and exit),
-`-send-test "<text>"` (send a message without touching the database), `-table`,
-`-channel`.
+Flags: `-show-config` (redacted, prints every mapped address), `-setup-only`
+(install the trigger and exit), `-send-test "<text>"` (send a message without
+touching the database), `-send-test-email <address>` (required with `-send-test`
+when more than one address is mapped), `-table`, `-channel`.
 
 ## Design notes / sharp edges
 
 **Replicas must stay 1.** LISTEN/NOTIFY delivers each notification to *every*
-listening session, so a second replica delivers a duplicate of every code to the
-same chat. `strategy: Recreate` is set for the same reason — a RollingUpdate
-briefly runs two pods. Scaling out needs deduplication (an advisory lock keyed
-on the `verification_code` row id), which is not implemented; do not simply
-raise `replicas`.
+listening session, so a second replica delivers a duplicate of every code to
+each mapped chat. `strategy: Recreate` is set for the same reason — a
+RollingUpdate briefly runs two pods. Scaling out needs deduplication (an
+advisory lock keyed on the `verification_code` row id), which is not
+implemented; do not simply raise `replicas`.
 
 **The trigger is installed by the program, not by a migration.** On startup it
 runs `CREATE OR REPLACE FUNCTION` plus `DROP TRIGGER IF EXISTS`/`CREATE TRIGGER`
