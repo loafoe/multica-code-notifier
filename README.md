@@ -32,19 +32,36 @@ kubectl apply -f deploy/10-configmap.yaml  # email -> chat id routing
 kubectl apply -f deploy/20-deployment.yaml
 ```
 
-`deploy/secrets.sh` needs a Telegram bot token from one of:
+`deploy/10-configmap.yaml` is the source of truth for routing; edit it before a
+fresh install. `deploy/secrets.sh` needs a Telegram bot token from one of:
 
 | Source | How |
 |---|---|
 | A Secret already in the cluster | `TELEGRAM_SOURCE_NAMESPACE=<ns> TELEGRAM_SOURCE_SECRET=<name> ./deploy/secrets.sh` |
 | A value you supply yourself | `TELEGRAM_BOT_TOKEN=<token> ./deploy/secrets.sh` |
 
-Edit `deploy/10-configmap.yaml` (or the live ConfigMap) to map the team's
-addresses. Adjust `PGHOST` and the `multica-db-app` secret reference in
+Adjust `PGHOST` and the `multica-db-app` secret reference in
 `deploy/20-deployment.yaml` to match your database.
 
-Verify with a real end-to-end run — ask the login page for a code and watch it
-arrive:
+Verify the resolved routing without sending anything:
+
+```bash
+kubectl -n multica exec deploy/multica-code-notifier -- \
+  /ko-app/multica-code-notifier -show-config
+# recipients    1 address(es)
+#   you@example.com    123456789
+```
+
+Then send a real message to one mapped chat (the binary lives at `/ko-app/`
+because the image is built with `ko --bare`):
+
+```bash
+kubectl -n multica exec deploy/multica-code-notifier -- \
+  /ko-app/multica-code-notifier -send-test "routing test" \
+  -send-test-email you@example.com
+```
+
+Finally, an end-to-end run — ask the login page for a code and watch it arrive:
 
 ```bash
 curl -s -X POST "$MULTICA_API/auth/send-code" \
@@ -52,7 +69,7 @@ curl -s -X POST "$MULTICA_API/auth/send-code" \
 
 kubectl logs -n multica deploy/multica-code-notifier -f
 # msg="new verification code" email=...
-# msg="code delivered" email=...
+# msg="code delivered" email=... chat_id=...
 ```
 
 ## Licence
@@ -115,6 +132,8 @@ address that should reach several people:
 * An address that is **not** in the map is skipped (logged, not delivered), so
   another user's code can never fall through to a default chat.
 * A `TELEGRAM_CHAT_MAP` env var overrides the file, mainly for local runs.
+* If neither the env var nor the file is present the process exits at startup
+  rather than running with no recipients.
 
 After editing:
 
@@ -172,9 +191,10 @@ database can be restarted, rescheduled or failed over at any time. Every session
 end triggers a full-jitter exponential backoff up to 30s, then re-connects,
 re-checks the trigger and re-LISTENs.
 
-**Delivery is at-most-once.** Telegram delivery is synchronous; if a send fails
-the code is dropped and only logged. The row is still in the table, so a new
-code can be requested.
+**Delivery is at-most-once per chat.** Telegram delivery is synchronous; if a
+send fails for one recipient, that code is dropped for that chat and only
+logged, while the remaining recipients still get it. The row is still in the
+table, so a new code can be requested.
 
 **Telegram errors.** A 400/401/403 (bad token, blocked bot, unknown chat) fails
 fast instead of retrying; 429 honours `retry_after`; transient 5xx retries with
